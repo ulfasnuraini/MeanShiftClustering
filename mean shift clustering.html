@@ -1,0 +1,233 @@
+<html><head>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+    .container { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+    canvas { border: 1px solid #444; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    .controls { background: #222; padding: 20px; border-radius: 12px; display: flex; gap: 20px; align-items: center; }
+    .slider-group { display: flex; flex-direction: column; align-items: center; }
+    button { padding: 12px 24px; cursor: pointer; background: #00d2ff; color: #000; border: none; border-radius: 6px; font-weight: bold; transition: 0.2s; margin-left: 10px;}
+    button:hover { background: #3a7bd5; color: white; }
+    button:disabled { background: #555; cursor: not_allowed; }
+    input[type=range] { cursor: pointer; width: 150px; }
+    #status { font-weight: bold; color: #00ff95; margin-left: 20px; font-size: 1.2em;}
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>Mean Shift Clustering: Hill-Climbing</h2>
+  
+  <div class="controls">
+    <div class="slider-group">
+      <label>Bandwidth (h): <span id="hLabel">40</span></label>
+      <input type="range" id="hSlider" min="10" max="150" value="50">
+    </div>
+    <button onclick="iterate()">Shift Points</button>
+    <button id="finalizeBtn" onclick="finalizeClusters()" disabled="">Finalize Clusters</button>
+    <button onclick="resetData()" style="background:#555; color: white;">Reset</button>
+    <span id="status" style="color: rgb(0, 210, 255);"></span>
+  </div>
+
+  <div id="canvas-holder">
+  </div>
+</div>
+
+<script>
+let points = [];
+let centroids = [];
+let paths = []; // Trajectory history
+let pointColors = []; // Store color assignment
+let finalModes = []; // The merged, unique modes
+let heatmap;
+let h = 50;
+let isFinalized = false;
+
+function setup() {
+  let cnv = createCanvas(700, 450);
+  cnv.parent('canvas-holder');
+  colorMode(HSB, 360, 100, 100, 1); // Set to HSB for easier cluster coloring
+  
+  document.getElementById('hSlider').oninput = function() {
+    if (isFinalized) return; // Prevent bandwidth change after finalizing
+    h = parseInt(this.value);
+    document.getElementById('hLabel').innerText = h;
+    generateHeatmap();
+  };
+  
+  resetData();
+}
+
+function resetData() {
+  points = [];
+  centroids = [];
+  paths = [];
+  pointColors = [];
+  finalModes = [];
+  isFinalized = false;
+  document.getElementById('finalizeBtn').disabled = true;
+  document.getElementById('status').innerText = "";
+  
+  // Create clusters
+  for (let i = 0; i < 5; i++) {
+    let cx = random(width * 0.1, width * 0.9);
+    let cy = random(height * 0.1, height * 0.9);
+    for (let j = 0; j < 20; j++) {
+      let p = createVector(cx + randomGaussian(0, 30), cy + randomGaussian(0, 30));
+      points.push(p);
+      centroids.push(p.copy());
+      paths.push([p.copy()]); 
+      pointColors.push(color(0, 0, 100, 0.5)); // Initial color (translucent white)
+    }
+  }
+  generateHeatmap();
+}
+
+function generateHeatmap() {
+  heatmap = createGraphics(width, height);
+  heatmap.pixelDensity(1);
+  heatmap.background(20);
+  
+  let step = 6;
+  for (let x = 0; x < width; x += step) {
+    for (let y = 0; y < height; y += step) {
+      let density = 0;
+      for (let p of points) {
+        let d = dist(x, y, p.x, p.y);
+        // Gaussian Kernel influence
+        density += exp(-0.5 * pow(d / (h/2), 2));
+      }
+      
+      let alpha = map(density, 0, 8, 0, 1);
+      let r = map(density, 0, 8, 30, 255);
+      // Let's use RGB just for heatmap generation for simplicity, then switch back
+      heatmap.noStroke();
+      heatmap.fill(r, 50, 100, alpha * 255);
+      heatmap.rect(x, y, step, step);
+    }
+  }
+}
+
+function iterate() {
+  if (isFinalized) return; 
+
+  let maxShift = 0;
+  for (let i = 0; i < centroids.length; i++) {
+    let c = centroids[i];
+    let num = createVector(0, 0);
+    let den = 0;
+
+    for (let p of points) {
+      let d = c.dist(p);
+      if (d < h * 2) { // Neighborhood check
+        let weight = exp(-0.5 * pow(d / (h/2), 2));
+        num.add(p5.Vector.mult(p, weight));
+        den += weight;
+      }
+    }
+
+    if (den > 0) {
+      let target = p5.Vector.div(num, den);
+      let shift = p5.Vector.dist(c, target);
+      if (shift > maxShift) maxShift = shift;
+
+      centroids[i] = p5.Vector.lerp(c, target, 0.5);
+      paths[i].push(centroids[i].copy()); 
+    }
+  }
+
+  // Enable finalization if points have stopped moving significantly
+  if (maxShift < 0.1) {
+    document.getElementById('finalizeBtn').disabled = false;
+    document.getElementById('status').innerText = "Converged. Click Finalize.";
+    document.getElementById('status').style.color = "#00ff95";
+  } else {
+    document.getElementById('status').innerText = "Shifting...";
+    document.getElementById('status').style.color = "#ff9f43";
+  }
+}
+
+function finalizeClusters() {
+  if (isFinalized) return;
+  isFinalized = true;
+  document.getElementById('finalizeBtn').disabled = true;
+
+  finalModes = [];
+  let clusterAssignments = []; // Maps initial point index to final mode index
+  
+  // 1. Merge Close Modes
+  const mergeThreshold = h / 4; // Modes closer than this are the same cluster
+
+  for (let i = 0; i < centroids.length; i++) {
+    let c = centroids[i];
+    let foundModeIndex = -1;
+
+    for (let j = 0; j < finalModes.length; j++) {
+      if (c.dist(finalModes[j]) < mergeThreshold) {
+        foundModeIndex = j;
+        break;
+      }
+    }
+
+    if (foundModeIndex === -1) {
+      finalModes.push(c.copy());
+      clusterAssignments[i] = finalModes.length - 1;
+    } else {
+      clusterAssignments[i] = foundModeIndex;
+    }
+  }
+
+  // 2. Assign Colors based on unique modes found
+  let numClusters = finalModes.length;
+  for (let i = 0; i < points.length; i++) {
+    let modeIndex = clusterAssignments[i];
+    // Use HSB to generate distinct hues
+    let hue = map(modeIndex, 0, numClusters, 0, 360);
+    pointColors[i] = color(hue, 90, 100, 0.8);
+  }
+
+  document.getElementById('status').innerText = `Detected ${numClusters} Clusters.`;
+  document.getElementById('status').style.color = "#00d2ff";
+}
+
+function draw() {
+  background(20);
+  if (heatmap) image(heatmap, 0, 0);
+
+  // Draw Cluster Paths (Trajectories)
+  noFill();
+  strokeWeight(1);
+  for (let i = 0; i < paths.length; i++) {
+    let path = paths[i];
+    beginShape();
+    let c = pointColors[i]; // Use finalized or initial color
+    stroke(hue(c), saturation(c), brightness(c), isFinalized ? 0.3 : 0.1); 
+    for (let v of path) {
+      vertex(v.x, v.y);
+    }
+    endShape();
+  }
+
+  // Draw Original Points
+  noStroke();
+  for (let i = 0; i < points.length; i++) {
+    fill(pointColors[i]);
+    ellipse(points[i].x, points[i].y, 5);
+  }
+
+  // Draw Centroids (if not finalized)
+  if (!isFinalized) {
+    fill(0, 0, 100); // White
+    stroke(0, 0, 0); // Black outline
+    strokeWeight(1);
+    for (let c of centroids) ellipse(c.x, c.y, 7);
+  } else {
+      // Draw Final Unique Modes
+      fill(0, 0, 100);
+      stroke(255);
+      strokeWeight(2);
+      for(let m of finalModes) ellipse(m.x, m.y, 10);
+  }
+}
+</script>
+</body></html>
